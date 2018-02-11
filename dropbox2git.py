@@ -1,11 +1,12 @@
 import sys
 
 import yaml
-
 import dropbox
 from dropbox.exceptions import AuthError
 from dropbox.files import (
-    FileMetadata, FolderMetadata, DeletedMetadata)
+    FileMetadata, FolderMetadata, DeletedMetadata, ListRevisionsMode)
+
+from registry import Registry
 
 
 def read_config(path='config.yaml'):
@@ -18,15 +19,19 @@ def handle_file(dbx, md_file):
     print("File ", md_file.name, "[DELETED]" if deleted else "")
     print("------")
     print("Revisions:")
-    revs = dbx.files_list_revisions(md_file.path_lower).entries
-    for rev in revs:
-        print('id:', md_file.id)
-        print('path: ', md_file.path_lower)
-        print('sharing info:', md_file.sharing_info)
-        print('server modified: ', md_file.server_modified)
-        print('rev:', md_file.rev)
-        print('size (bytes):', md_file.size)
-        print('content hash:', md_file.content_hash)
+    revisionsResult = dbx.files_list_revisions(
+            md_file.id,
+            mode=ListRevisionsMode('id', None),
+            limit=50)
+    # revs = dbx.files_list_revisions(md_file.path_lower).entries
+    for rev in revisionsResult.entries:
+        print('id:', rev.id)
+        print('path: ', rev.path_lower)
+        print('sharing info:', rev.sharing_info)
+        print('server modified: ', rev.server_modified)
+        print('rev:', rev.rev)
+        print('size (bytes):', rev.size)
+        print('content hash:', rev.content_hash)
         print("")
 
 
@@ -47,15 +52,61 @@ def handle_metadata(dbx, metadata):
         handle_folder(dbx, metadata)
 
 
-def list_dropbox_contents_recursively(dbx):
-    result = dbx.files_list_folder('', recursive=True, include_deleted=False)
+def list_dropbox_contents_recursively(dbx, fids):
+    result = dbx.files_list_folder(
+        '/test', recursive=True, include_deleted=True)
 
     while True:
         for entry in result.entries:
-            handle_metadata(dbx, entry)
+            # handle_metadata(dbx, entry)
+            if isinstance(entry, DeletedMetadata):
+                print(entry)
+            elif entry.id in fids:
+                print(entry)
         if not result.has_more:
             break
         result = dbx.files_list_folder_continue(result.cursor)
+
+    print()
+
+
+def single_file(fid, dbx):
+    # fid = 'id:FioHgpMceDsAAAAAAAAdKA'
+    print("============================")
+    print("Metadata for ", fid)
+    print("============================")
+    m = dbx.files_get_metadata(
+        fid, include_deleted=True)
+#    handle_file(dbx, m)
+    print(m)
+    print("")
+
+    revisionsResult = dbx.files_list_revisions(
+            fid,
+            mode=ListRevisionsMode('id', None),
+            limit=50)
+
+    print("============================")
+    print("Revisions for ", fid)
+    print("============================")
+    for entry in revisionsResult.entries:
+        print("---------------------------------------")
+        print(entry)
+    print("")
+    print("")
+
+
+def oldstuff(dbx):
+    fids = ["id:FioHgpMceDsAAAAAAAAdIw", 'id:FioHgpMceDsAAAAAAAAdKA']
+    list_dropbox_contents_recursively(dbx, fids)
+
+    for fid in fids:
+        single_file(fid, dbx)
+
+
+def newstuff(dbx):
+    registry = Registry(dbx, ['/test'])
+    registry.update_from_dropbox()
 
 
 def main():
@@ -74,7 +125,7 @@ def main():
     except AuthError:
         sys.exit('ERROR: inalid dropbox access token!')
 
-    list_dropbox_contents_recursively(dbx)
+    newstuff(dbx)
 
 
 if __name__ == '__main__':
