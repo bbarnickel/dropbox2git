@@ -8,7 +8,6 @@ from dropbox.files import (
 class File:
     def __init__(self, dbid):
         self.id = dbid
-        print(self.id)
         self.revisions = []
 
     def contains_revision(self, rev_id):
@@ -29,9 +28,11 @@ class File:
 class DeletedRevision:
     def __init__(self, dbid):
         self.id = dbid
-        print(self.id)
         self.archived = False
         self.timestamp = datetime.now()
+
+    def __repr__(self):
+        return "Deleted id " + self.id + " at " + repr(self.timestamp)
 
 
 class FileRevision:
@@ -42,6 +43,9 @@ class FileRevision:
         self.timestamp = dbxRev.server_modified
         self.hash = dbxRev.content_hash
         self.archived = False
+
+    def __repr__(self):
+        return self.path + " at " + repr(self.timestamp)
 
 
 class Registry:
@@ -62,9 +66,9 @@ class Registry:
         items = list(self.get_dbx_current_metadata())
         already_updated_ids = []
         for metadata in items:
-            if id not in self.map:
-                self.map[id] = File(id)
-            dbx_file = self.map[id]
+            if metadata.id not in self.map:
+                self.map[metadata.id] = File(metadata.id)
+            dbx_file = self.map[metadata.id]
             self.update_file_from_metadata(dbx_file, metadata)
             already_updated_ids.append(metadata.id)
 
@@ -107,8 +111,6 @@ class Registry:
             self.update_file_from_metadata(dbx_file, metadata)
 
     def update_revisions(self, dbx_file):
-        print(dbx_file)
-        print(dbx_file.id)
         revisionsResult = self.dbx.files_list_revisions(
                 dbx_file.id,
                 mode=ListRevisionsMode('id', None),

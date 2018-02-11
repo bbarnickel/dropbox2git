@@ -108,6 +108,11 @@ def newstuff(dbx):
     registry = Registry(dbx, ['/test'])
     registry.update_from_dropbox()
 
+    for id, obj in registry.map.items():
+        print("ID: ", id, obj.id)
+        for rev in obj.revisions:
+            print(rev)
+
 
 def main():
     config = read_config()
