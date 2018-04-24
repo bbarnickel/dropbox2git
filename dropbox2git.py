@@ -54,7 +54,7 @@ def handle_metadata(dbx, metadata):
 
 def list_dropbox_contents_recursively(dbx, fids):
     result = dbx.files_list_folder(
-        '/test', recursive=True, include_deleted=True)
+        '/B-Plan Lindenhof', recursive=True, include_deleted=True)
 
     while True:
         for entry in result.entries:
@@ -98,6 +98,7 @@ def single_file(fid, dbx):
 
 def oldstuff(dbx):
     fids = ["id:FioHgpMceDsAAAAAAAAdIw", 'id:FioHgpMceDsAAAAAAAAdKA']
+    fids = ['id:VSSjUqzbQiYAAAAAAAAE0A']
     list_dropbox_contents_recursively(dbx, fids)
 
     for fid in fids:
@@ -105,13 +106,16 @@ def oldstuff(dbx):
 
 
 def newstuff(dbx):
-    registry = Registry(dbx, ['/test'])
+    DATABASE = './db.pickle'
+    registry = Registry(dbx, ['/B-Plan Lindenhof'])
+    registry.load_from_json(DATABASE)
     registry.update_from_dropbox()
+    registry.store_to_json(DATABASE)
 
     for id, obj in registry.map.items():
         print("ID: ", id, obj.id)
         for rev in obj.revisions:
-            print(rev)
+            print("   Rev.: " + str(rev))
 
 
 def main():
@@ -131,6 +135,7 @@ def main():
         sys.exit('ERROR: inalid dropbox access token!')
 
     newstuff(dbx)
+    # oldstuff(dbx)
 
 
 if __name__ == '__main__':

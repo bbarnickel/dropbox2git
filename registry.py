@@ -1,8 +1,10 @@
 import json
+import pickle
 from datetime import datetime
 
 from dropbox.files import (
     FileMetadata, DeletedMetadata, ListRevisionsMode)
+from dropbox.exceptions import (ApiError)
 
 
 class File:
@@ -45,7 +47,7 @@ class FileRevision:
         self.archived = False
 
     def __repr__(self):
-        return self.path + " at " + repr(self.timestamp)
+        return self.rev + ": " + self.path + " at " + repr(self.timestamp)
 
 
 class Registry:
@@ -55,23 +57,41 @@ class Registry:
         self.map = {}
 
     def load_from_json(self, path_to_json):
-        with open(path_to_json, 'r') as fin:
-            self.map = json.load(fin)
+        try:
+            with open(path_to_json, 'rb') as fin:
+                self.map = pickle.load(fin)
+                # self.map = json.load(fin)
+        except:
+            print("Warning: Could not properly restore from " + path_to_json)
+            self.map = {}
 
     def store_to_json(self, path_to_json):
-        with open(path_to_json, 'w') as fout:
-            json.dump(fout, self.map)
+        with open(path_to_json, 'wb') as fout:
+            # json.dump(self.map, fout)
+            pickle.dump(self.map, fout)
 
     def update_from_dropbox(self):
-        items = list(self.get_dbx_current_metadata())
+        items = list(self.get_dbx_current_metadata())[:20]
         already_updated_ids = []
-        for metadata in items:
-            if metadata.id not in self.map:
-                self.map[metadata.id] = File(metadata.id)
-            dbx_file = self.map[metadata.id]
-            self.update_file_from_metadata(dbx_file, metadata)
-            already_updated_ids.append(metadata.id)
+        for i, metadata in enumerate(items):
+            mid = metadata.id
 
+            print("({}/{}) Getting data for {} ({})".format(
+                i, len(items), metadata.path_display, mid))
+
+            # Sorgt dafür, dass die Datei in self.map mit der
+            # id als Schlüssel kommt, wenn nicht schon
+            # geschehen.
+            dbx_file = self.map.setdefault(mid, File(mid))
+
+            # File-Objekt wird nun mit den Daten der obersten
+            # Revision gefüttert.
+            self.update_file_from_metadata(dbx_file, metadata)
+
+            already_updated_ids.append(mid)
+
+        # Jetzt noch alle Ids in der self.map updaten,
+        # die nicht geupdated worden sind.
         self.update_files(already_updated_ids)
 
     def get_dbx_current_metadata(self):
@@ -91,6 +111,7 @@ class Registry:
 
     def update_file_from_metadata(self, dbx_file, metadata):
         if not dbx_file.contains_revision(metadata.rev):
+            print("  Getting revisions...")
             revision = FileRevision(metadata)
             dbx_file.revisions.append(revision)
             self.update_revisions(dbx_file)
@@ -98,6 +119,7 @@ class Registry:
     def update_files(self, already_updated_ids):
         for id, dbx_file in self.map.items():
             if id not in already_updated_ids:
+                print("Found existing entry not updated.")
                 self.update_file(self, dbx_file)
 
     def update_file(self, dbx_file):
@@ -111,11 +133,16 @@ class Registry:
             self.update_file_from_metadata(dbx_file, metadata)
 
     def update_revisions(self, dbx_file):
-        revisionsResult = self.dbx.files_list_revisions(
-                dbx_file.id,
-                mode=ListRevisionsMode('id', None),
-                limit=100)
-        for entry in revisionsResult.entries:
-            revision = FileRevision(entry)
-            if not dbx_file.contains_revision(revision):
-                dbx_file.revisions.append(revision)
+        try:
+            revisionsResult = self.dbx.files_list_revisions(
+                    dbx_file.id,
+                    mode=ListRevisionsMode('id', None),
+                    limit=100)
+
+            for entry in revisionsResult.entries:
+                revision = FileRevision(entry)
+                if not dbx_file.contains_revision(revision.rev):
+                    dbx_file.revisions.append(revision)
+        except ApiError as e:
+            print("Error retrieving history of {}. Skipping.".format(
+                dbx_file.id))

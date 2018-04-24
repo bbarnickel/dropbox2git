@@ -104,3 +104,5 @@ ENV/
 # own
 
 config.yaml
+db.*
+playground
