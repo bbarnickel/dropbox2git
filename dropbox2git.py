@@ -6,7 +6,7 @@ from dropbox.exceptions import AuthError
 from dropbox.files import (
     FileMetadata, FolderMetadata, DeletedMetadata, ListRevisionsMode)
 
-from registry import Registry
+from registry import Registry, SqliteRegistry
 
 
 def read_config(path='config.yaml'):
@@ -134,8 +134,11 @@ def main():
     except AuthError:
         sys.exit('ERROR: inalid dropbox access token!')
 
-    newstuff(dbx)
+    sr = SqliteRegistry('db.sqlite')
+
+    # newstuff(dbx)
     # oldstuff(dbx)
+
 
 
 if __name__ == '__main__':

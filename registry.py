@@ -1,6 +1,7 @@
-import json
 import pickle
 from datetime import datetime
+from contextlib import closing
+import sqlite3
 
 from dropbox.files import (
     FileMetadata, DeletedMetadata, ListRevisionsMode)
@@ -38,16 +39,57 @@ class DeletedRevision:
 
 
 class FileRevision:
-    def __init__(self, dbxRev):
-        self.id = dbxRev.id
-        self.path = dbxRev.path_lower
-        self.rev = dbxRev.rev
-        self.timestamp = dbxRev.server_modified
-        self.hash = dbxRev.content_hash
-        self.archived = False
+    STATUS_UNKNOWN = 0
+    STATUS_META_ONLY = 1
+    STATUS_FETCHED = 2
+    STATUS_ARCHIVED = 3
+
+#    def __init__(self, dbxRev):
+#        self.id = dbxRev.id
+#        self.path = dbxRev.path_lower
+#        self.rev = dbxRev.rev
+#        self.timestamp = dbxRev.server_modified
+#        self.hash = dbxRev.content_hash
+#        self.archived = False
+
+    def __init__(self, id, rev):
+        self.id = id
+        self.rev = rev
+        self.timestamp = None
+        self.hash = None
+        self.path = None
+        self.status = FileRevision.STATUS_UNKNOWN
 
     def __repr__(self):
         return self.rev + ": " + self.path + " at " + repr(self.timestamp)
+
+
+class SqliteRegistry:
+    def __init__(self, db_path):
+        self.connection = sqlite3.connect(db_path)
+        self.ensure_structure()
+
+    def ensure_structure(self):
+        with closing(self.connection.cursor()) as c:
+            c.execute("""SELECT name FROM sqlite_master
+                         WHERE type='table' AND name='revisions'""")
+            if c.fetchone() is not None:
+                return
+            with self.connection:
+                c.execute("""CREATE TABLE revisions (
+                                id TEXT,
+                                rev TEXT,
+                                timestamp DATETIME,
+                                hash TEXT,
+                                path TEXT,
+                                status INTEGER,
+                                PRIMARY KEY(id, rev)
+                            )""")
+    def query(self, query, *params):
+
+    def get_all_revisions(self, file_id):
+
+
 
 
 class Registry:
