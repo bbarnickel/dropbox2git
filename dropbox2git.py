@@ -6,7 +6,7 @@ from dropbox.exceptions import AuthError
 from dropbox.files import (
     FileMetadata, FolderMetadata, DeletedMetadata, ListRevisionsMode)
 
-from registry import Registry, SqliteRegistry
+from registry import SqliteRegistry, RegistryUpdater
 
 
 def read_config(path='config.yaml'):
@@ -60,9 +60,10 @@ def list_dropbox_contents_recursively(dbx, fids):
         for entry in result.entries:
             # handle_metadata(dbx, entry)
             if isinstance(entry, DeletedMetadata):
-                print(entry)
-            elif entry.id in fids:
-                print(entry)
+                print("DELETED:")
+            print(entry)
+#            elif entry.id in fids:
+#                print(entry)
         if not result.has_more:
             break
         result = dbx.files_list_folder_continue(result.cursor)
@@ -81,10 +82,15 @@ def single_file(fid, dbx):
     print(m)
     print("")
 
-    revisionsResult = dbx.files_list_revisions(
-            fid,
-            mode=ListRevisionsMode('id', None),
-            limit=50)
+    try:
+        revisionsResult =  dbx.files_list_revisions(
+                fid,
+                mode=ListRevisionsMode('id', None),
+                limit=100)
+    except ApiError:
+        print(
+            "Error retrieving history of {}. Skipping.".format(id))
+        return
 
     print("============================")
     print("Revisions for ", fid)
@@ -104,18 +110,16 @@ def oldstuff(dbx):
     for fid in fids:
         single_file(fid, dbx)
 
+def list_all(dbx):
+    folder = '/B-Plan Lindenhof'
+
 
 def newstuff(dbx):
-    DATABASE = './db.pickle'
-    registry = Registry(dbx, ['/B-Plan Lindenhof'])
-    registry.load_from_json(DATABASE)
-    registry.update_from_dropbox()
-    registry.store_to_json(DATABASE)
+    DATABASE = './db.sqlite'
 
-    for id, obj in registry.map.items():
-        print("ID: ", id, obj.id)
-        for rev in obj.revisions:
-            print("   Rev.: " + str(rev))
+    registry = SqliteRegistry(DATABASE)
+    updater = RegistryUpdater(registry, dbx)
+    updater.update_folder('/B-Plan Lindenhof')
 
 
 def main():
@@ -134,11 +138,8 @@ def main():
     except AuthError:
         sys.exit('ERROR: inalid dropbox access token!')
 
-    sr = SqliteRegistry('db.sqlite')
-
     # newstuff(dbx)
-    # oldstuff(dbx)
-
+    oldstuff(dbx)
 
 
 if __name__ == '__main__':

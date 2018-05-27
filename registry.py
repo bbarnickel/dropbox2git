@@ -1,41 +1,14 @@
-import pickle
-from datetime import datetime
 from contextlib import closing
 import sqlite3
+import logging
 
 from dropbox.files import (
     FileMetadata, DeletedMetadata, ListRevisionsMode)
 from dropbox.exceptions import (ApiError)
 
 
-class File:
-    def __init__(self, dbid):
-        self.id = dbid
-        self.revisions = []
-
-    def contains_revision(self, rev_id):
-        return any(map(lambda r: r.rev == rev_id, self.revisions))
-
-    def is_deleted(self):
-        if not any(self.revisions):
-            return False
-
-        newest = sorted(
-                self.revisions, key=lambda i: i.timestamp, reverse=True)[0]
-        return isinstance(newest, DeletedRevision)
-
-    def add_deleted(self):
-        self.revisions.append(DeletedRevision(self.id))
-
-
-class DeletedRevision:
-    def __init__(self, dbid):
-        self.id = dbid
-        self.archived = False
-        self.timestamp = datetime.now()
-
-    def __repr__(self):
-        return "Deleted id " + self.id + " at " + repr(self.timestamp)
+class RegistryError(Exception):
+    pass
 
 
 class FileRevision:
@@ -44,14 +17,6 @@ class FileRevision:
     STATUS_FETCHED = 2
     STATUS_ARCHIVED = 3
 
-#    def __init__(self, dbxRev):
-#        self.id = dbxRev.id
-#        self.path = dbxRev.path_lower
-#        self.rev = dbxRev.rev
-#        self.timestamp = dbxRev.server_modified
-#        self.hash = dbxRev.content_hash
-#        self.archived = False
-
     def __init__(self, id, rev):
         self.id = id
         self.rev = rev
@@ -59,9 +24,21 @@ class FileRevision:
         self.hash = None
         self.path = None
         self.status = FileRevision.STATUS_UNKNOWN
+        self.deleted = False
 
     def __repr__(self):
         return self.rev + ": " + self.path + " at " + repr(self.timestamp)
+
+    def is_equal(self, other):
+        return all([i == j for i, j in [
+            (self.id, other.id),
+            (self.rev, other.rev),
+            (self.timestamp, other.timestamp),
+            (self.hash, other.hash),
+            (self.path, other.path),
+            (self.status, other.status),
+            (self.deleted, other.deleted)
+        ]])
 
 
 class SqliteRegistry:
@@ -83,108 +60,170 @@ class SqliteRegistry:
                                 hash TEXT,
                                 path TEXT,
                                 status INTEGER,
+                                deleted BOOLEAN,
                                 PRIMARY KEY(id, rev)
                             )""")
-    def query(self, query, *params):
 
-    def get_all_revisions(self, file_id):
+    def get_file_ids(self):
+        with closing(self.connection.cursor()) as c:
+            query = """SELECT r.id FROM revisions r
+                       WHERE r.timestamp = (SELECT MAX(timestamp)
+                            FROM revisions rr WHERE rr.id = r.id)"""
+            c.execute(query)
+            for r in c:
+                yield r[0]
+
+    def has_revision(self, id, rev):
+        with closing(self.connection.cursor()) as c:
+            c.execute("""SELECT COUNT(*) FROM revisions
+                         WHERE id=? AND rev=?""", (id, rev))
+            count = int(c.fetchone()[0])
+            if count == 0:
+                return False
+            elif count == 1:
+                return True
+            else:
+                raise RegistryError(
+                    "registry has more than one entry for revision "
+                    "({0}, {1})".format(id, rev))
+
+    def read_revision(self, id, rev):
+        with closing(self.connection.cursor()) as c:
+            c.execute("""SELECT id, rev, timestamp, hash, path, status
+                         FROM revisions
+                         WHERE id=? AND rev=?""", (id, rev))
+            rows = c.fetchmany(2)
+            if len(rows) == 0:
+                return None
+            elif len(rows) > 1:
+                raise RegistryError(
+                    "registry has more than one entry for "
+                    "revision ({0}, {1})".format(id, rev))
+
+            return self._create_revision_from_row(rows[0])
+
+    def ensure_revision(self, file_revision):
+        existing = self.read_revision(file_revision.id, file_revision.rev)
+        if existing:
+            if file_revision.equals(existing):
+                return
+            else:
+                raise RegistryError(
+                    "Registry already contains revision ({0}, {1}) "
+                    "but attributes differ!".format(
+                        file_revision.id,
+                        file_revision.rev))
+
+        self._save_revision(file_revision)
+
+    def _save_revision(self, file_revision):
+        with closing(self.connection.cursor()) as c:
+            with self.connection:
+                c.execute(
+                    """INSERT INTO revisions(
+                            id,
+                            rev,
+                            timestamp,
+                            hash,
+                            path,
+                            status,
+                            deleted)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        file_revision.id,
+                        file_revision.rev,
+                        file_revision.timestamp,
+                        file_revision.hash,
+                        file_revision.path,
+                        file_revision.status,
+                        file_revision.deleted)
+                )
+                return True
+
+    def _create_revision_from_row(self, row):
+        result = FileRevision(row["id"], row["rev"])
+        result.timestamp = row["timestamp"]
+        result.hash = row["hash"]
+        result.path = row["path"]
+        result.status = row["status"]
+        result.deleted = row["deleted"]
+        return result
 
 
+class RegistryUpdater:
+    """Updates the given registry from dropbox metadata"""
 
-
-class Registry:
-    def __init__(self, dbx, dbx_folders):
+    def __init__(self, registry, dbx):
+        self.registry = registry
         self.dbx = dbx
-        self.folders = dbx_folders
-        self.map = {}
 
-    def load_from_json(self, path_to_json):
-        try:
-            with open(path_to_json, 'rb') as fin:
-                self.map = pickle.load(fin)
-                # self.map = json.load(fin)
-        except:
-            print("Warning: Could not properly restore from " + path_to_json)
-            self.map = {}
-
-    def store_to_json(self, path_to_json):
-        with open(path_to_json, 'wb') as fout:
-            # json.dump(self.map, fout)
-            pickle.dump(self.map, fout)
-
-    def update_from_dropbox(self):
-        items = list(self.get_dbx_current_metadata())[:20]
+    def update_folder(self, folder):
         already_updated_ids = []
-        for i, metadata in enumerate(items):
-            mid = metadata.id
+        dbx_items = list(self.get_current_metadata(folder))[:20]
+        for i, dbx_metadata in enumerate(dbx_items):
+            mid = dbx_metadata.id
+            rev = dbx_metadata.rev
 
             print("({}/{}) Getting data for {} ({})".format(
-                i, len(items), metadata.path_display, mid))
+                i+1, len(dbx_items), dbx_metadata.path_display, mid))
 
-            # Sorgt dafür, dass die Datei in self.map mit der
-            # id als Schlüssel kommt, wenn nicht schon
-            # geschehen.
-            dbx_file = self.map.setdefault(mid, File(mid))
-
-            # File-Objekt wird nun mit den Daten der obersten
-            # Revision gefüttert.
-            self.update_file_from_metadata(dbx_file, metadata)
+            if not self.registry.has_revision(mid, rev):
+                self.update_item(dbx_metadata)
 
             already_updated_ids.append(mid)
 
         # Jetzt noch alle Ids in der self.map updaten,
         # die nicht geupdated worden sind.
-        self.update_files(already_updated_ids)
+        self.update_items(already_updated_ids)
 
-    def get_dbx_current_metadata(self):
-        for folder in self.folders:
-            files_list = self.dbx.files_list_folder(
-                folder, recursive=True, include_deleted=False)
+    def get_current_metadata(self, folder):
+        dbx_files_list = self.dbx.files_list_folder(
+            folder, recursive=True, include_deleted=False)
 
-            while True:
-                for entry in files_list.entries:
-                    if (isinstance(entry, FileMetadata) or
-                            isinstance(entry, DeletedMetadata)):
-                        yield entry
-                if not files_list.has_more:
-                    break
-                files_list = self.dbx.files_list_folder_continue(
-                    files_list.cursor)
+        while True:
+            for dbx_entry in dbx_files_list.entries:
+                if (isinstance(dbx_entry, FileMetadata) or
+                        isinstance(dbx_entry, DeletedMetadata)):
+                    yield dbx_entry
+            if not dbx_files_list.has_more:
+                break
+            dbx_files_list = self.dbx.files_list_folder_continue(
+                dbx_files_list.cursor)
 
-    def update_file_from_metadata(self, dbx_file, metadata):
-        if not dbx_file.contains_revision(metadata.rev):
-            print("  Getting revisions...")
-            revision = FileRevision(metadata)
-            dbx_file.revisions.append(revision)
-            self.update_revisions(dbx_file)
-
-    def update_files(self, already_updated_ids):
-        for id, dbx_file in self.map.items():
+    def update_items(self, already_updated_ids):
+        for id in self.registry.get_file_ids():
             if id not in already_updated_ids:
-                print("Found existing entry not updated.")
-                self.update_file(self, dbx_file)
+                dbx_metadata = self.dbx.files_get_metadata(
+                    id, include_deleted=True)
+                self.update_item(dbx_metadata)
 
-    def update_file(self, dbx_file):
-        metadata = self.dbx.files_get_metadata(
-            dbx_file.id, include_deleted=True)
+    def update_item(self, dbx_metadata):
+        if self.registry.has_revision(dbx_metadata.id, dbx_metadata.rev):
+            return
+        # how to handle deleted?
+        is_deleted = isinstance(dbx_metadata, DeletedMetadata)
+        if is_deleted:
+            print("Found a deleted one!")
+        print("Get revisions for " + str(dbx_metadata.id))
+        for revision in self.get_revisions(dbx_metadata.id):
+            self.registry.ensure_revision(revision)
 
-        if isinstance(metadata, DeletedMetadata):
-            if not dbx_file.is_deleted():
-                dbx_file.add_deleted()
-        else:
-            self.update_file_from_metadata(dbx_file, metadata)
-
-    def update_revisions(self, dbx_file):
+    def get_revisions(self, id):
         try:
-            revisionsResult = self.dbx.files_list_revisions(
-                    dbx_file.id,
+            dbx_revisions_result = self.dbx.files_list_revisions(
+                    id,
                     mode=ListRevisionsMode('id', None),
                     limit=100)
 
-            for entry in revisionsResult.entries:
-                revision = FileRevision(entry)
-                if not dbx_file.contains_revision(revision.rev):
-                    dbx_file.revisions.append(revision)
-        except ApiError as e:
-            print("Error retrieving history of {}. Skipping.".format(
-                dbx_file.id))
+            return map(self._get_file_revision, dbx_revisions_result.entries)
+        except ApiError:
+            logging.warning(
+                "Error retrieving history of {}. Skipping.".format(id))
+
+    def _get_file_revision(self, dbx_metadata):
+        result = FileRevision(dbx_metadata.id, dbx_metadata.rev)
+        result.timestamp = dbx_metadata.server_modified
+        result.hash = dbx_metadata.content_hash
+        result.path = dbx_metadata.path_lower
+        result.deleted = isinstance(dbx_metadata, DeletedMetadata)
+        return result
