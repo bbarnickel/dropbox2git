@@ -1,6 +1,7 @@
 from contextlib import closing
 import sqlite3
 import logging
+from datetime import datetime
 
 from dropbox.files import (
     FileMetadata, DeletedMetadata, ListRevisionsMode)
@@ -105,7 +106,9 @@ class SqliteRegistry:
     def ensure_revision(self, file_revision):
         existing = self.read_revision(file_revision.id, file_revision.rev)
         if existing:
-            if file_revision.equals(existing):
+            if file_revision.deleted and existing.deleted:
+                return
+            elif file_revision.equals(existing):
                 return
             else:
                 raise RegistryError(
@@ -161,16 +164,16 @@ class RegistryUpdater:
         already_updated_ids = []
         dbx_items = list(self.get_current_metadata(folder))[:20]
         for i, dbx_metadata in enumerate(dbx_items):
-            mid = dbx_metadata.id
+            id = dbx_metadata.id
             rev = dbx_metadata.rev
 
             print("({}/{}) Getting data for {} ({})".format(
-                i+1, len(dbx_items), dbx_metadata.path_display, mid))
+                i+1, len(dbx_items), dbx_metadata.path_display, id))
 
-            if not self.registry.has_revision(mid, rev):
-                self.update_item(dbx_metadata)
+            if not self.registry.has_revision(id, rev):
+                self.update_item(dbx_metadata, id)
 
-            already_updated_ids.append(mid)
+            already_updated_ids.append(id)
 
         # Jetzt noch alle Ids in der self.map updaten,
         # die nicht geupdated worden sind.
@@ -200,12 +203,12 @@ class RegistryUpdater:
     def update_item(self, dbx_metadata, id):
         is_deleted = isinstance(dbx_metadata, DeletedMetadata)
         if is_deleted:
-
+            deleted_revision = self._get_deleted_file_revision(
+                dbx_metadata, id)
+            self.registry.ensure_revision(deleted_revision)
+            return
 
         if self.registry.has_revision(id, dbx_metadata.rev):
-            return
-        # how to handle deleted?
-        if is_deleted:
             return
 
         for revision in self.get_revisions_by_id(dbx_metadata.id):
@@ -239,5 +242,12 @@ class RegistryUpdater:
         result.deleted = isinstance(dbx_metadata, DeletedMetadata)
         return result
 
-    def _get_deleted_file_revision(self, dbx_metadata):
-        result = FileRevision(dbx_metadata)
+    def _get_deleted_file_revision(self, dbx_metadata, id):
+        result = FileRevision(id, "deleted")
+        # TODO: Improve following. Unfortunately the DeletedMetadata instance
+        # does not offer much information
+        result.timestamp = datetime.now()
+        result.hash = ""
+        result.path = dbx_metadata.path_lower
+        result.deleted = True
+        return result
