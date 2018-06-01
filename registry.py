@@ -23,7 +23,8 @@ class FileRevision:
         self.rev = rev
         self.timestamp = None
         self.hash = None
-        self.path = None
+        self.path_lower = None
+        self.path_display = None
         self.status = FileRevision.STATUS_UNKNOWN
         self.deleted = False
 
@@ -36,7 +37,8 @@ class FileRevision:
             (self.rev, other.rev),
             (self.timestamp, other.timestamp),
             (self.hash, other.hash),
-            (self.path, other.path),
+            (self.path_lower, other.path_lower),
+            (self.path_display, other.path_display),
             (self.status, other.status),
             (self.deleted, other.deleted)
         ]])
@@ -60,7 +62,8 @@ class SqliteRegistry:
                                 rev TEXT,
                                 timestamp TIMESTAMP,
                                 hash TEXT,
-                                path TEXT,
+                                path_lower TEXT,
+                                path_display TEXT,
                                 status INTEGER,
                                 deleted BOOLEAN,
                                 PRIMARY KEY(id, rev)
@@ -91,7 +94,8 @@ class SqliteRegistry:
 
     def read_revision(self, id, rev):
         with closing(self.connection.cursor()) as c:
-            c.execute("""SELECT id, rev, timestamp, hash, path, status, deleted
+            c.execute("""SELECT id, rev, timestamp,
+                         hash, path_lower, path_display, status, deleted
                          FROM revisions
                          WHERE id=? AND rev=?""", (id, rev))
             rows = c.fetchmany(2)
@@ -132,16 +136,18 @@ class SqliteRegistry:
                             rev,
                             timestamp,
                             hash,
-                            path,
+                            path_lower,
+                            path_display,
                             status,
                             deleted)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         file_revision.id,
                         file_revision.rev,
                         file_revision.timestamp,
                         file_revision.hash,
-                        file_revision.path,
+                        file_revision.path_lower,
+                        file_revision.path_display,
                         file_revision.status,
                         file_revision.deleted)
                 )
@@ -151,9 +157,10 @@ class SqliteRegistry:
         result = FileRevision(row[0], row[1])
         result.timestamp = row[2]
         result.hash = row[3]
-        result.path = row[4]
-        result.status = row[5]
-        result.deleted = row[6] == 1
+        result.path_lower = row[4]
+        result.path_display = row[5]
+        result.status = row[6]
+        result.deleted = row[7] == 1
         return result
 
 
@@ -175,7 +182,7 @@ class RegistryUpdater:
             id = dbx_metadata.id
             rev = dbx_metadata.rev
 
-            logging.info("({}/{}) Getting data for {} ({})".format(
+            print("({}/{}) Getting data for {} ({})".format(
                 i+1, len(dbx_items), dbx_metadata.path_display, id))
 
             if not self.registry.has_revision(id, rev):
@@ -229,11 +236,11 @@ class RegistryUpdater:
             return 0
 
         revision = self._get_file_revision(dbx_metadata)
-        self.registry.ensure_revision(revision)
 
-        updates = [
-            self.registry.ensure_revision(r) for r in
-            self.get_revisions_by_id(dbx_metadata.id)]
+        updates = [self.registry.ensure_revision(revision)] + \
+                  [
+                    self.registry.ensure_revision(r) for r in
+                    self.get_revisions_by_id(dbx_metadata.id)]
         return updates.count(True)
 
     def get_revisions_by_id(self, id):
@@ -261,7 +268,8 @@ class RegistryUpdater:
         result = FileRevision(dbx_metadata.id, dbx_metadata.rev)
         result.timestamp = dbx_metadata.server_modified
         result.hash = dbx_metadata.content_hash
-        result.path = dbx_metadata.path_lower
+        result.path_lower = dbx_metadata.path_lower
+        result.path_display = dbx_metadata.path_display
         result.deleted = isinstance(dbx_metadata, DeletedMetadata)
         return result
 
@@ -271,6 +279,7 @@ class RegistryUpdater:
         # does not offer much information
         result.timestamp = datetime.now()
         result.hash = ""
-        result.path = dbx_metadata.path_lower
+        result.path_lower = dbx_metadata.path_lower
+        result.path_display = dbx_metadata.path_display
         result.deleted = True
         return result
