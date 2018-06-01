@@ -2,7 +2,7 @@ import sys
 
 import yaml
 import dropbox
-from dropbox.exceptions import AuthError
+from dropbox.exceptions import (AuthError, ApiError)
 from dropbox.files import (
     FileMetadata, FolderMetadata, DeletedMetadata, ListRevisionsMode)
 
@@ -83,7 +83,7 @@ def single_file(fid, dbx):
     print("")
 
     try:
-        revisionsResult =  dbx.files_list_revisions(
+        revisionsResult = dbx.files_list_revisions(
                 fid,
                 mode=ListRevisionsMode('id', None),
                 limit=100)
@@ -110,9 +110,6 @@ def oldstuff(dbx):
     for fid in fids:
         single_file(fid, dbx)
 
-def list_all(dbx):
-    folder = '/B-Plan Lindenhof'
-
 
 def newstuff(dbx):
     DATABASE = './db.sqlite'
@@ -138,8 +135,8 @@ def main():
     except AuthError:
         sys.exit('ERROR: inalid dropbox access token!')
 
-    # newstuff(dbx)
-    oldstuff(dbx)
+    newstuff(dbx)
+    # oldstuff(dbx)
 
 
 if __name__ == '__main__':
