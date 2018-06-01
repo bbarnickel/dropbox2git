@@ -195,25 +195,36 @@ class RegistryUpdater:
             if id not in already_updated_ids:
                 dbx_metadata = self.dbx.files_get_metadata(
                     id, include_deleted=True)
-                self.update_item(dbx_metadata)
+                self.update_item(dbx_metadata, id)
 
-    def update_item(self, dbx_metadata):
-        if self.registry.has_revision(dbx_metadata.id, dbx_metadata.rev):
-            return
-        # how to handle deleted?
+    def update_item(self, dbx_metadata, id):
         is_deleted = isinstance(dbx_metadata, DeletedMetadata)
         if is_deleted:
-            print("Found a deleted one!")
-        print("Get revisions for " + str(dbx_metadata.id))
-        for revision in self.get_revisions(dbx_metadata.id):
+
+
+        if self.registry.has_revision(id, dbx_metadata.rev):
+            return
+        # how to handle deleted?
+        if is_deleted:
+            return
+
+        for revision in self.get_revisions_by_id(dbx_metadata.id):
             self.registry.ensure_revision(revision)
 
-    def get_revisions(self, id):
+    def get_revisions_by_id(self, id):
+        return self._get_revisions(id, True)
+
+    def get_revisions_by_path(self, path):
+        return self._get_revisions(path, False)
+
+    def _get_revisions(self, key, is_id):
         try:
+            if is_id:
+                mode = ListRevisionsMode('id', None)
+            else:
+                mode = ListRevisionsMode('path', None)
             dbx_revisions_result = self.dbx.files_list_revisions(
-                    id,
-                    mode=ListRevisionsMode('id', None),
-                    limit=100)
+                    id, mode=mode, limit=100)
 
             return map(self._get_file_revision, dbx_revisions_result.entries)
         except ApiError:
@@ -227,3 +238,6 @@ class RegistryUpdater:
         result.path = dbx_metadata.path_lower
         result.deleted = isinstance(dbx_metadata, DeletedMetadata)
         return result
+
+    def _get_deleted_file_revision(self, dbx_metadata):
+        result = FileRevision(dbx_metadata)
