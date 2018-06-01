@@ -44,7 +44,8 @@ class FileRevision:
 
 class SqliteRegistry:
     def __init__(self, db_path):
-        self.connection = sqlite3.connect(db_path)
+        self.connection = sqlite3.connect(
+            db_path, detect_types=sqlite3.PARSE_DECLTYPES)
         self.ensure_structure()
 
     def ensure_structure(self):
@@ -57,7 +58,7 @@ class SqliteRegistry:
                 c.execute("""CREATE TABLE revisions (
                                 id TEXT,
                                 rev TEXT,
-                                timestamp DATETIME,
+                                timestamp TIMESTAMP,
                                 hash TEXT,
                                 path TEXT,
                                 status INTEGER,
@@ -90,7 +91,7 @@ class SqliteRegistry:
 
     def read_revision(self, id, rev):
         with closing(self.connection.cursor()) as c:
-            c.execute("""SELECT id, rev, timestamp, hash, path, status
+            c.execute("""SELECT id, rev, timestamp, hash, path, status, deleted
                          FROM revisions
                          WHERE id=? AND rev=?""", (id, rev))
             rows = c.fetchmany(2)
@@ -107,10 +108,12 @@ class SqliteRegistry:
         existing = self.read_revision(file_revision.id, file_revision.rev)
         if existing:
             if file_revision.deleted and existing.deleted:
-                return
-            elif file_revision.equals(existing):
-                return
+                return False
+            elif file_revision.is_equal(existing):
+                return False
             else:
+                print(file_revision.__dict__)
+                print(existing.__dict__)
                 raise RegistryError(
                     "Registry already contains revision ({0}, {1}) "
                     "but attributes differ!".format(
@@ -118,6 +121,7 @@ class SqliteRegistry:
                         file_revision.rev))
 
         self._save_revision(file_revision)
+        return True
 
     def _save_revision(self, file_revision):
         with closing(self.connection.cursor()) as c:
@@ -144,12 +148,12 @@ class SqliteRegistry:
                 return True
 
     def _create_revision_from_row(self, row):
-        result = FileRevision(row["id"], row["rev"])
-        result.timestamp = row["timestamp"]
-        result.hash = row["hash"]
-        result.path = row["path"]
-        result.status = row["status"]
-        result.deleted = row["deleted"]
+        result = FileRevision(row[0], row[1])
+        result.timestamp = row[2]
+        result.hash = row[3]
+        result.path = row[4]
+        result.status = row[5]
+        result.deleted = row[6] == 1
         return result
 
 
@@ -162,22 +166,31 @@ class RegistryUpdater:
 
     def update_folder(self, folder):
         already_updated_ids = []
-        dbx_items = list(self.get_current_metadata(folder))[:20]
+        update_count = 0
+        print("Enumerate folder " + folder + "...")
+        dbx_items = list(self.get_current_metadata(folder))
+        print("Found {0} items.".format(len(dbx_items)))
+
         for i, dbx_metadata in enumerate(dbx_items):
             id = dbx_metadata.id
             rev = dbx_metadata.rev
 
-            print("({}/{}) Getting data for {} ({})".format(
+            logging.info("({}/{}) Getting data for {} ({})".format(
                 i+1, len(dbx_items), dbx_metadata.path_display, id))
 
             if not self.registry.has_revision(id, rev):
-                self.update_item(dbx_metadata, id)
+                update_count += self.update_item(dbx_metadata, id)
 
             already_updated_ids.append(id)
 
         # Jetzt noch alle Ids in der self.map updaten,
         # die nicht geupdated worden sind.
-        self.update_items(already_updated_ids)
+        print("Trying to update ids which were not found in the "
+              "directory enumeration...")
+        update_count += self.update_items(already_updated_ids)
+        print("Updated {0} files.".format(update_count))
+
+        return update_count
 
     def get_current_metadata(self, folder):
         dbx_files_list = self.dbx.files_list_folder(
@@ -194,25 +207,34 @@ class RegistryUpdater:
                 dbx_files_list.cursor)
 
     def update_items(self, already_updated_ids):
+        update_count = 0
         for id in self.registry.get_file_ids():
             if id not in already_updated_ids:
                 dbx_metadata = self.dbx.files_get_metadata(
                     id, include_deleted=True)
-                self.update_item(dbx_metadata, id)
+                update_count += self.update_item(dbx_metadata, id)
+        return update_count
 
     def update_item(self, dbx_metadata, id):
         is_deleted = isinstance(dbx_metadata, DeletedMetadata)
         if is_deleted:
             deleted_revision = self._get_deleted_file_revision(
                 dbx_metadata, id)
-            self.registry.ensure_revision(deleted_revision)
-            return
+            if self.registry.ensure_revision(deleted_revision):
+                return 1
+            else:
+                return 0
 
         if self.registry.has_revision(id, dbx_metadata.rev):
-            return
+            return 0
 
-        for revision in self.get_revisions_by_id(dbx_metadata.id):
-            self.registry.ensure_revision(revision)
+        revision = self._get_file_revision(dbx_metadata)
+        self.registry.ensure_revision(revision)
+
+        updates = [
+            self.registry.ensure_revision(r) for r in
+            self.get_revisions_by_id(dbx_metadata.id)]
+        return updates.count(True)
 
     def get_revisions_by_id(self, id):
         return self._get_revisions(id, True)
@@ -227,12 +249,13 @@ class RegistryUpdater:
             else:
                 mode = ListRevisionsMode('path', None)
             dbx_revisions_result = self.dbx.files_list_revisions(
-                    id, mode=mode, limit=100)
+                    key, mode=mode, limit=100)
 
             return map(self._get_file_revision, dbx_revisions_result.entries)
         except ApiError:
             logging.warning(
-                "Error retrieving history of {}. Skipping.".format(id))
+                "Error retrieving history of {}. Skipping.".format(key))
+            return []
 
     def _get_file_revision(self, dbx_metadata):
         result = FileRevision(dbx_metadata.id, dbx_metadata.rev)

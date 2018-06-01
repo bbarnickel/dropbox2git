@@ -1,4 +1,5 @@
 import sys
+import logging
 
 import yaml
 import dropbox
@@ -60,6 +61,7 @@ def list_dropbox_contents_recursively(dbx, fids):
         for entry in result.entries:
             # handle_metadata(dbx, entry)
             if isinstance(entry, DeletedMetadata):
+                continue
                 print("DELETED:")
             print(entry)
 #            elif entry.id in fids:
