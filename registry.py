@@ -78,6 +78,17 @@ class SqliteRegistry:
             for r in c:
                 yield r[0]
 
+    def get_unsafed_revisions(self):
+        with closing(self.connection.cursor()) as c:
+            query = """SELECT
+                    id, rev, timestamp, hash, path_lower, path_display,
+                    status, deleted
+                FROM revisions
+                WHERE status = 1"""
+            c.execute(query)
+            for row in c:
+                yield self._create_revision_from_row(row)
+
     def has_revision(self, id, rev):
         with closing(self.connection.cursor()) as c:
             c.execute("""SELECT COUNT(*) FROM revisions
